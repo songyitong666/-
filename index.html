@@ -1,0 +1,892 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+    <title>暗夜牌局 - 基础版</title>
+    <style>
+        body {
+            background: #1a1a1f;
+            color: #e0e0e0;
+            font-family: 'Segoe UI', 'Microsoft YaHei', sans-serif;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            min-height: 100vh;
+            margin: 0;
+            padding: 10px;
+            box-sizing: border-box;
+        }
+        #game-container {
+            background: #2a2a30;
+            border-radius: 16px;
+            padding: 16px;
+            max-width: 800px;
+            width: 100%;
+            box-shadow: 0 0 30px rgba(0,0,0,0.5);
+            text-align: center;
+        }
+        canvas {
+            width: 100%;
+            height: auto;
+            background: #3a3a42;
+            border-radius: 10px;
+            cursor: pointer;
+        }
+        .controls {
+            margin-top: 10px;
+            display: flex;
+            flex-wrap: wrap;
+            gap: 8px;
+            justify-content: center;
+        }
+        button {
+            background: #5a5a6e;
+            color: white;
+            border: none;
+            padding: 10px 18px;
+            border-radius: 8px;
+            font-size: 16px;
+            cursor: pointer;
+            transition: background 0.2s;
+        }
+        button:hover {
+            background: #7a7a90;
+        }
+        button:disabled {
+            background: #3a3a45;
+            cursor: not-allowed;
+        }
+        #log {
+            background: #1e1e24;
+            border-radius: 8px;
+            padding: 8px;
+            margin-top: 10px;
+            height: 100px;
+            overflow-y: auto;
+            text-align: left;
+            font-size: 14px;
+            line-height: 1.5;
+        }
+        #log div {
+            border-bottom: 1px solid #333;
+            padding: 2px 0;
+        }
+    </style>
+</head>
+<body>
+<div id="game-container">
+    <h2>暗夜牌局</h2>
+    <canvas id="gameCanvas" width="780" height="480"></canvas>
+    <div class="controls">
+        <button id="btn-menu">主菜单</button>
+        <button id="btn-restart">重新开始</button>
+        <button id="btn-undo">撤销</button>
+    </div>
+    <div id="log"></div>
+</div>
+
+<script>
+    // ==================== 游戏核心 ====================
+    // 牌类型定义
+    const CARD_TYPES = {
+        WEREWOLF: '狼人',
+        WITCH: '女巫',
+        CIVILIAN: '平民',
+        SEER: '预言家',
+        CUPID: '丘比特',
+        GUARD: '守卫',
+        THIEF: '顺手牵羊',
+        THORNS: '反甲'
+    };
+
+    // 初始手牌（双方镜像）
+    const INITIAL_DECK = [
+        '狼人', '狼人',
+        '女巫', '女巫',
+        '平民',
+        '预言家',
+        '丘比特',
+        '守卫',
+        '顺手牵羊',
+        '反甲'
+    ];
+
+    // 游戏状态
+    let game = {
+        mode: 'menu', // menu / pvp / ai
+        state: 'menu', // menu / select / settle / gameover
+        currentPlayer: 1, // 1 或 2
+        players: {
+            1: { hand: [], hp: 6, maxHp: 6, hasGun: true, gunUsed: false, pendingCupid: null, shield: 0 },
+            2: { hand: [], hp: 6, maxHp: 6, hasGun: true, gunUsed: false, pendingCupid: null, shield: 0 }
+        },
+        round: 1,
+        maxRounds: 10,
+        selected: { 1: null, 2: null }, // 当前选中的牌名
+        selectedMode: { 1: null, 2: null }, // 女巫/顺手牵羊的模式
+        selectedGun: { 1: false, 2: false }, // 是否使用猎枪
+        revealed: { 1: null, 2: null }, // 亮牌后的牌
+        revealedMode: { 1: null, 2: null },
+        revealedGun: { 1: false, 2: false },
+        seerEffect: { 1: false, 2: false }, // 本回合是否受预言家效果（对方可看自己选牌）
+        seerObserver: { 1: false, 2: false }, // 本回合自己是否有预言家观察权
+        log: [],
+        gameOver: false,
+        winner: null
+    };
+
+    const canvas = document.getElementById('gameCanvas');
+    const ctx = canvas.getContext('2d');
+    const logDiv = document.getElementById('log');
+
+    // 工具函数：添加日志
+    function addLog(text) {
+        game.log.push(text);
+        if (game.log.length > 50) game.log.shift();
+        renderLog();
+    }
+
+    function renderLog() {
+        logDiv.innerHTML = game.log.map(t => `<div>${t}</div>`).join('');
+        logDiv.scrollTop = logDiv.scrollHeight;
+    }
+
+    // 重置游戏
+    function resetGame(mode) {
+        game.mode = mode;
+        game.state = 'select';
+        game.currentPlayer = 1;
+        game.players[1] = { hand: [...INITIAL_DECK], hp: 6, maxHp: 6, hasGun: true, gunUsed: false, pendingCupid: null, shield: 0 };
+        game.players[2] = { hand: [...INITIAL_DECK], hp: 6, maxHp: 6, hasGun: true, gunUsed: false, pendingCupid: null, shield: 0 };
+        game.round = 1;
+        game.maxRounds = 10;
+        game.selected = { 1: null, 2: null };
+        game.selectedMode = { 1: null, 2: null };
+        game.selectedGun = { 1: false, 2: false };
+        game.revealed = { 1: null, 2: null };
+        game.revealedMode = { 1: null, 2: null };
+        game.revealedGun = { 1: false, 2: false };
+        game.seerEffect = { 1: false, 2: false };
+        game.seerObserver = { 1: false, 2: false };
+        game.log = [];
+        game.gameOver = false;
+        game.winner = null;
+        addLog('游戏开始！初始生命 6 点，每人 10 张牌 + 1 张猎枪。');
+        render();
+    }
+
+    // 检查游戏是否结束
+    function checkGameOver() {
+        if (game.players[1].hp <= 0) {
+            game.gameOver = true;
+            game.winner = 2;
+            game.state = 'gameover';
+            addLog('玩家 2 获胜！');
+            render();
+            return true;
+        }
+        if (game.players[2].hp <= 0) {
+            game.gameOver = true;
+            game.winner = 1;
+            game.state = 'gameover';
+            addLog('玩家 1 获胜！');
+            render();
+            return true;
+        }
+        if (game.round > game.maxRounds && game.players[1].hp !== game.players[2].hp) {
+            game.gameOver = true;
+            game.winner = game.players[1].hp > game.players[2].hp ? 1 : 2;
+            game.state = 'gameover';
+            addLog(`游戏结束！玩家 ${game.winner} 获胜！`);
+            render();
+            return true;
+        } else if (game.round > game.maxRounds && game.players[1].hp === game.players[2].hp) {
+            game.gameOver = true;
+            game.winner = 0;
+            game.state = 'gameover';
+            addLog('游戏结束！平局！');
+            render();
+            return true;
+        }
+        return false;
+    }
+
+    // 处理丘比特和预言家等持续效果
+    function applyPendingEffects() {
+        for (let p of [1, 2]) {
+            const player = game.players[p];
+            if (player.pendingCupid !== null) {
+                if (player.pendingCupid > 0) {
+                    player.hp -= player.pendingCupid;
+                    addLog(`玩家 ${p} 受到丘比特残留伤害 ${player.pendingCupid} 点！`);
+                } else {
+                    player.shield = 1;
+                    addLog(`玩家 ${p} 获得 1 点护盾。`);
+                }
+                player.pendingCupid = null;
+            }
+        }
+        // 检查死亡
+        if (checkGameOver()) return;
+    }
+
+    // 结算一轮
+    function settleRound() {
+        const p1 = game.players[1];
+        const p2 = game.players[2];
+        const card1 = game.revealed[1];
+        const card2 = game.revealed[2];
+        const mode1 = game.revealedMode[1];
+        const mode2 = game.revealedMode[2];
+        const gun1 = game.revealedGun[1];
+        const gun2 = game.revealedGun[2];
+
+        let damage1 = 0; // 对玩家1造成的伤害（来源玩家2）
+        let damage2 = 0; // 对玩家2造成的伤害（来源玩家1）
+        let heal1 = 0;
+        let heal2 = 0;
+        let thiefSteal = false; // 是否发生牵牌
+        let thiefCard = null;
+        let thiefFrom = null;
+
+        // 记录丘比特本轮实际伤害
+        let actualDamage1 = 0;
+        let actualDamage2 = 0;
+
+        // 1. 顺手牵羊·牵牌处理
+        if (card1 === '顺手牵羊' && card2 === '顺手牵羊') {
+            // 双方都出顺手牵羊，后手模式改为先手模式（以玩家1为先手）
+            if (mode1 !== mode2) {
+                mode2 = mode1;
+                game.revealedMode[2] = mode2;
+                addLog('双方都出顺手牵羊，玩家2模式调整为玩家1的模式。');
+            }
+        }
+
+        if (card1 === '顺手牵羊' && mode1 === '牵牌') {
+               // 玩家1牵牌玩家2
+            thiefSteal = true;
+            thiefCard = card2;
+            thiefFrom = 2;
+            // 玩家2获得平民
+            if (!p2.hand.includes('平民')) {
+                p2.hand.push('平民');
+            } else {
+                // 如果已经有平民，可以添加，但为了简单，我们允许重复
+                p2.hand.push('平民');
+            }
+            game.maxRounds += 1;
+            addLog('玩家1使用顺手牵羊·牵牌，获得玩家2的牌并给对方一张平民。');
+            // 将该牌从玩家2手牌移除（如果存在）
+            // 注意：这里简化处理，暂时不从手牌移除，因为牌已经打出，等下会移除
+        } else if (card2 === '顺手牵羊' && mode2 === '牵牌') {
+            thiefSteal = true;
+            thiefCard = card1;
+            thiefFrom = 1;
+            if (!p1.hand.includes('平民')) {
+                p1.hand.push('平民');
+            } else {
+                p1.hand.push('平民');
+            }
+            game.maxRounds += 1;
+            addLog('玩家2使用顺手牵羊·牵牌，获得玩家1的牌并给对方一张平民。');
+        }
+
+        // 处理猎枪：如果是伤害牌且使用了猎枪，伤害+1
+        const isDamage1 = (card1 === '狼人' || (card1 === '女巫' && mode1 === '毒药'));
+        const isDamage2 = (card2 === '狼人' || (card2 === '女巫' && mode2 === '毒药'));
+
+        if (isDamage1 && gun1) {
+            damage2 += 1;
+            p1.gunUsed = true;
+            addLog('玩家1使用猎枪，伤害+1。');
+        }
+        if (isDamage2 && gun2) {
+            damage1 += 1;
+            p2.gunUsed = true;
+            addLog('玩家2使用猎枪，伤害+1。');
+        }
+
+        // 2. 守卫护盾（先处理）
+        // 守卫抵挡对方下一次伤害1点，只抵挡一次
+        if (card1 === '守卫') {
+            // 玩家1出守卫，抵挡玩家2造成的第一次伤害1点
+            if (damage1 > 0) {
+                if (damage1 >= 1) {
+                    const absorbed = Math.min(1, damage1);
+                    damage1 -= absorbed;
+                    addLog('玩家1的守卫抵挡了1点伤害。');
+                }
+            }
+        }
+        if (card2 === '守卫') {
+            if (damage2 > 0) {
+                const absorbed = Math.min(1, damage2);
+                damage2 -= absorbed;
+                addLog('玩家2的守卫抵挡了1点伤害。');
+            }
+        }
+
+        // 3. 反甲处理
+        if (card1 === '反甲' && damage1 > 0) {
+            // 反弹伤害给玩家2
+            const reflect = damage1;
+            damage1 = 0;
+            // 玩家2可能用守卫抵挡反弹伤害
+            if (card2 === '守卫') {
+                // 守卫已经在前面处理过，不能再抵挡反弹，因为守卫是一次性，但这里我们简化：如果玩家2有守卫，优先抵挡原本的伤害，反弹只能另算。实际规则可能复杂，这里简化：反弹伤害直接造成，玩家2的守卫如果还有剩余可抵挡？我们简单处理：反弹伤害不能被守卫抵挡。
+            }
+            damage2 += reflect;
+            addLog(`玩家1的反甲反弹 ${reflect} 点伤害给玩家2！`);
+        }
+        if (card2 === '反甲' && damage2 > 0) {
+            const reflect = damage2;
+            damage2 = 0;
+            damage1 += reflect;
+            addLog(`玩家2的反甲反弹 ${reflect} 点伤害给玩家1！`);
+        }
+
+        // 4. 女巫治疗
+        if (card1 === '女巫' && mode1 === '解药') {
+            heal1 += 1;
+        }
+        if (card2 === '女巫' && mode2 === '解药') {
+            heal2 += 1;
+        }
+
+        // 5. 顺手牵羊·牵血
+        if (card1 === '顺手牵羊' && mode1 === '牵血') {
+            if (damage1 === 0) {
+                heal1 += 1;
+                damage2 += 1;
+                addLog('玩家1顺手牵羊偷血成功，回复1点，对方失血1点。');
+            } else {
+                addLog('玩家1顺手牵羊偷血失败，受到对方伤害。');
+            }
+        }
+        if (card2 === '顺手牵羊' && mode2 === '牵血') {
+            if (damage2 === 0) {
+                heal2 += 1;
+                damage1 += 1;
+                addLog('玩家2顺手牵羊偷血成功，回复1点，对方失血1点。');
+            } else {
+                addLog('玩家2顺手牵羊偷血失败，受到对方伤害。');
+            }
+        }
+
+        // 6. 丘比特处理：记录本轮实际伤害
+           if (card1 === '丘比特') {
+            // 玩家1的丘比特：记录本轮玩家1最终承受的伤害
+            actualDamage1 = damage1;
+            // 注意：如果有护盾，先消耗护盾再记录？规则说实际伤害，应该是在护盾减免后的。我们先处理护盾。
+        }
+        if (card2 === '丘比特') {
+            actualDamage2 = damage2;
+        }
+
+        // 处理护盾（来自丘比特或守卫等）
+        for (let p of [1, 2]) {
+            const player = game.players[p];
+            if (player.shield > 0) {
+                if (p === 1 && damage1 > 0) {
+                    const absorbed = Math.min(player.shield, damage1);
+                    damage1 -= absorbed;
+                    player.shield -= absorbed;
+                    addLog(`玩家1的护盾抵挡了${absorbed}点伤害。`);
+                } else if (p === 2 && damage2 > 0) {
+                    const absorbed = Math.min(player.shield, damage2);
+                    damage2 -= absorbed;
+                    player.shield -= absorbed;
+                    addLog(`玩家2的护盾抵挡了${absorbed}点伤害。`);
+                }
+            }
+        }
+
+        // 应用伤害和治疗
+        p1.hp -= damage1;
+        p2.hp -= damage2;
+        p1.hp += heal1;
+        p2.hp += heal2;
+
+        // 限制生命上限
+        p1.hp = Math.min(p1.hp, p1.maxHp);
+        p2.hp = Math.min(p2.hp, p2.maxHp);
+        p1.hp = Math.max(p1.hp, 0);
+        p2.hp = Math.max(p2.hp, 0);
+
+        if (damage1 > 0) addLog(`玩家1受到 ${damage1} 点伤害，当前生命 ${p1.hp}。`);
+        if (damage2 > 0) addLog(`玩家2受到 ${damage2} 点伤害，当前生命 ${p2.hp}。`);
+        if (heal1 > 0) addLog(`玩家1回复 ${heal1} 点生命，当前生命 ${p1.hp}。`);
+        if (heal2 > 0) addLog(`玩家2回复 ${heal2} 点生命，当前生命 ${p2.hp}。`);
+
+        // 处理丘比特效果存储
+        if (card1 === '丘比特') {
+            if (actualDamage1 > 0) {
+                p1.pendingCupid = actualDamage1;
+            } else {
+                p1.pendingCupid = 0; // 0表示未受伤，下一轮获得护盾
+            }
+            addLog(`玩家1打出丘比特，记录本轮实际伤害 ${actualDamage1}。`);
+        }
+        if (card2 === '丘比特') {
+            if (actualDamage2 > 0) {
+                p2.pendingCupid = actualDamage2;
+            } else {
+                p2.pendingCupid = 0;
+            }
+            addLog(`玩家2打出丘比特，记录本轮实际伤害 ${actualDamage2}。`);
+        }
+
+        // 处理预言家效果：如果本回合有人打出预言家，设置下回合的观察权
+        // 规则：预言家下一轮对方选牌后公开该牌，你看到后再选牌。双方都打则抵消。
+        if (card1 === '预言家' && card2 === '预言家') {
+            addLog('双方都打出预言家，效果抵消。');
+            game.seerEffect = { 1: false, 2: false };
+            game.seerObserver = { 1: false, 2: false };
+        } else if (card1 === '预言家') {
+            game.seerEffect[2] = true; // 玩家2下一轮选牌会被公开
+            game.seerObserver[1] = true; // 玩家1可观察
+            addLog('玩家1打出预言家，下一轮玩家2选牌后公开。');
+        } else if (card2 === '预言家') {
+            game.seerEffect[1] = true;
+            game.seerObserver[2] = true;
+            addLog('玩家2打出预言家，下一轮玩家1选牌后公开。');
+        } else {
+            game.seerEffect = { 1: false, 2: false };
+            game.seerObserver = { 1: false, 2: false };
+        }
+
+        // 检查游戏结束
+        if (checkGameOver()) return;
+
+        // 进入下一轮
+        game.round++;
+        game.selected = { 1: null, 2: null };
+        game.selectedMode = { 1: null, 2: null };
+        game.selectedGun = { 1: false, 2: false };
+        game.revealed = { 1: null, 2: null };
+        game.revealedMode = { 1: null, 2: null };
+        game.revealedGun = { 1: false, 2: false };
+
+        // 应用丘比特残留效果
+        applyPendingEffects();
+        if (game.gameOver) return;
+
+        // 如果游戏模式是AI，且当前是AI的回合，自动选牌
+        if (game.mode === 'ai' && game.currentPlayer === 2) {
+            aiSelect();
+        } else {
+            game.currentPlayer = 1; // 下轮从玩家1开始
+        }
+        render();
+    }
+
+    // AI选牌（简单随机，可选是否使用猎枪）
+    function aiSelect() {
+        const player = game.players[2];
+        if (game.state !== 'select' || game.currentPlayer !== 2) return;
+
+        // 随机选一张手牌
+        const hand = player.hand;
+        const idx = Math.floor(Math.random() * hand.length);
+        const card = hand[idx];
+        game.selected[2] = card;
+        game.selectedMode[2] = null;
+        game.selectedGun[2] = false;
+
+        // 女巫需要选择模式
+            if (card === '女巫') {
+            game.selectedMode[2] = Math.random() < 0.5 ? '毒药' : '解药';
+        }
+        // 顺手牵羊选择模式
+        if (card === '顺手牵羊') {
+            // 如果先手玩家已经选了顺手牵羊，需要跟随
+            if (game.selected[1] === '顺手牵羊' && game.selectedMode[1]) {
+                game.selectedMode[2] = game.selectedMode[1];
+            } else {
+                game.selectedMode[2] = Math.random() < 0.5 ? '牵血' : '牵牌';
+            }
+        }
+        // 猎枪：50%概率使用，且必须是伤害牌
+        const isDamage = (card === '狼人' || (card === '女巫' && game.selectedMode[2] === '毒药'));
+        if (isDamage && player.hasGun && !player.gunUsed && Math.random() < 0.5) {
+            game.selectedGun[2] = true;
+        }
+
+        // 检查预言家效果：如果玩家2受预言家效果，需要公开选牌，但AI选牌后没有UI，直接进入结算
+        finishSelectForPlayer(2);
+    }
+
+    // 玩家选牌后调用，进入下一步
+    function finishSelectForPlayer(playerNum) {
+        // 如果是双人模式，切换玩家；如果都选完了，进入亮牌结算
+        if (game.mode === 'pvp') {
+            if (game.selected[1] === null) {
+                game.currentPlayer = 2;
+                render();
+            } else if (game.selected[2] === null) {
+                game.currentPlayer = 1;
+                render();
+            } else {
+                revealAndSettle();
+            }
+        } else if (game.mode === 'ai') {
+            if (playerNum === 1) {
+                // 玩家1选完后，AI选牌
+                game.currentPlayer = 2;
+                aiSelect();
+            } else if (playerNum === 2) {
+                revealAndSettle();
+            }
+        }
+    }
+
+    function revealAndSettle() {
+        game.revealed[1] = game.selected[1];
+        game.revealed[2] = game.selected[2];
+        game.revealedMode[1] = game.selectedMode[1];
+        game.revealedMode[2] = game.selectedMode[2];
+        game.revealedGun[1] = game.selectedGun[1];
+        game.revealedGun[2] = game.selectedGun[2];
+
+        // 从手牌中移除打出的牌
+        removeCardFromHand(1, game.revealed[1]);
+        removeCardFromHand(2, game.revealed[2]);
+
+        addLog(`第${game.round}轮：玩家1打出 ${game.revealed[1]}${game.revealedMode[1] ? '(' + game.revealedMode[1] + ')' : ''}${game.revealedGun[1] ? ' +猎枪' : ''}，玩家2打出 ${game.revealed[2]}${game.revealedMode[2] ? '(' + game.revealedMode[2] + ')' : ''}${game.revealedGun[2] ? ' +猎枪' : ''}。`);
+        settleRound();
+        render();
+    }
+
+    function removeCardFromHand(playerNum, card) {
+        const hand = game.players[playerNum].hand;
+        const idx = hand.indexOf(card);
+        if (idx !== -1) {
+            hand.splice(idx, 1);
+        }
+    }
+
+    // 处理点击选牌
+    function handleCardClick(playerNum, card) {
+        if (game.state !== 'select') return;
+        if (game.currentPlayer !== playerNum) return;
+
+        game.selected[playerNum] = card;
+        game.selectedMode[playerNum] = null;
+        game.selectedGun[playerNum] = false;
+
+        // 女巫需要选择模式
+        if (card === '女巫') {
+            // 弹出简单模式选择（在画布上点击按钮）
+            game.state = 'modeSelect';
+            game.currentPlayer = playerNum;
+            render();
+            return;
+        }
+        // 顺手牵羊需要选择模式
+        if (card === '顺手牵羊') {
+            game.state = 'modeSelect';
+            game.currentPlayer = playerNum;
+            render();
+            return;
+        }
+
+        // 如果是伤害牌且猎枪可用，询问是否使用猎枪（简化：自动判断，玩家可点击猎枪按钮）
+        // 为简化，我们直接在选牌后不自动使用猎枪，让玩家通过点击猎枪按钮切换。
+
+        // 完成选牌
+        finishSelectForPlayer(playerNum);
+        render();
+    }
+
+    // 切换猎枪使用
+    function toggleGun(playerNum) {
+        if (game.state !== 'select') return;
+        if (game.currentPlayer !== playerNum) return;
+        const card = game.selected[playerNum];
+        if (!card) return;
+        const isDamage = (card === '狼人' || (card === '女巫' && game.selectedMode[playerNum] === '毒药'));
+        if (!isDamage) return;
+        if (game.players[playerNum].gunUsed) return;
+        game.selectedGun[playerNum] = !game.selectedGun[playerNum];
+        render();
+    }
+
+    // 模式选择（女巫/顺手牵羊）
+    function handleModeSelect(playerNum, mode) {
+        if (game.state !== 'modeSelect') return;
+        if (game.currentPlayer !== playerNum) return;
+        game.selectedMode[playerNum] = mode;
+        game.state = 'select';
+
+        // 如果双方都选了顺手牵羊，后手需要跟随先手（在结算时处理），这里不做强制
+        // 完成选牌
+        finishSelectForPlayer(playerNum);
+        render();
+    }
+
+    // 绘制画面
+    function render() {
+        ctx.clearRect(0, 0, canvas.width, canvas.height);
+        ctx.font = '16px "Microsoft YaHei"';
+        ctx.fillStyle = '#e0e0e0';
+
+        if (game.state === 'menu') {
+            drawMenu();
+            return;
+        }
+
+        if (game.state === 'gameover') {
+            drawGameOver();
+            return;
+        }
+
+        // 画背景和双方信息
+        ctx.fillStyle = '#2a2a30';
+        ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+        // 玩家1区域（上方）
+        drawPlayerArea(1, 40, 80);
+
+        // 玩家2区域（下方）
+                drawPlayerArea(2, 40, 320);
+
+        // 中间信息
+        ctx.fillStyle = '#ffffff';
+        ctx.font = 'bold 20px "Microsoft YaHei"';
+        ctx.textAlign = 'center';
+        ctx.fillText(`第 ${game.round} / ${game.maxRounds} 轮`, canvas.width/2, 230);
+        ctx.font = '14px "Microsoft YaHei"';
+        ctx.fillText(`当前操作：玩家 ${game.currentPlayer}`, canvas.width/2, 255);
+
+        // 如果是模式选择，绘制模式按钮
+        if (game.state === 'modeSelect') {
+            drawModeButtons();
+        }
+
+        // 如果选中了牌，显示猎枪按钮
+        if (game.selected[game.currentPlayer] && game.currentPlayer) {
+            const card = game.selected[game.currentPlayer];
+            const isDamage = (card === '狼人' || (card === '女巫' && game.selectedMode[game.currentPlayer] === '毒药'));
+            if (isDamage && game.players[game.currentPlayer].hasGun && !game.players[game.currentPlayer].gunUsed) {
+                ctx.fillStyle = '#b8860b';
+                ctx.fillRect(canvas.width/2 - 80, 280, 160, 30);
+                ctx.fillStyle = '#fff';
+                ctx.font = '16px "Microsoft YaHei"';
+                ctx.textAlign = 'center';
+                ctx.fillText(game.selectedGun[game.currentPlayer] ? '猎枪已启用' : '启用猎枪', canvas.width/2, 300);
+            }
+        }
+
+        // 日志显示在canvas底部
+        ctx.font = '12px "Microsoft YaHei"';
+        ctx.fillStyle = '#aaa';
+        ctx.textAlign = 'left';
+        ctx.fillText('提示：点击手牌出牌，女巫/顺手牵羊需选择模式。', 20, canvas.height-10);
+    }
+
+    function drawPlayerArea(playerNum, x, y) {
+        const player = game.players[playerNum];
+        ctx.fillStyle = playerNum === 1 ? '#4a4a5a' : '#5a4a4a';
+        ctx.fillRect(x, y, canvas.width - x*2, 140);
+        ctx.fillStyle = '#fff';
+        ctx.font = 'bold 16px "Microsoft YaHei"';
+        ctx.textAlign = 'left';
+        ctx.fillText(`玩家 ${playerNum}`, x+10, y+25);
+        ctx.font = '14px "Microsoft YaHei"';
+        ctx.fillText(`生命：${player.hp}  猎枪：${player.gunUsed ? '已用' : '可用'}`, x+120, y+25);
+        if (player.shield > 0) ctx.fillText(`护盾：${player.shield}`, x+300, y+25);
+
+        // 画手牌
+        const hand = player.hand;
+        const cardWidth = 60;
+        const cardHeight = 80;
+        const gap = 10;
+        const startX = x + 20;
+        const startY = y + 40;
+
+        for (let i = 0; i < hand.length; i++) {
+            const card = hand[i];
+            const cx = startX + i * (cardWidth + gap);
+            const cy = startY;
+
+            // 如果该牌被选中，高亮
+            if (game.selected[playerNum] === card && game.currentPlayer === playerNum) {
+                ctx.fillStyle = '#ffcc00';
+            } else {
+                ctx.fillStyle = '#3a3a4a';
+            }
+            ctx.fillRect(cx, cy, cardWidth, cardHeight);
+            ctx.strokeStyle = '#888';
+            ctx.lineWidth = 1;
+            ctx.strokeRect(cx, cy, cardWidth, cardHeight);
+
+            ctx.fillStyle = '#fff';
+            ctx.font = '12px "Microsoft YaHei"';
+            ctx.textAlign = 'center';
+            ctx.fillText(card, cx + cardWidth/2, cy + cardHeight/2);
+        }
+    }
+
+    function drawMenu() {
+        ctx.fillStyle = '#2a2a30';
+        ctx.fillRect(0, 0, canvas.width, canvas.height);
+        ctx.fillStyle = '#fff';
+        ctx.font = 'bold 30px "Microsoft YaHei"';
+        ctx.textAlign = 'center';
+        ctx.fillText('暗夜牌局', canvas.width/2, 150);
+        ctx.font = '18px "Microsoft YaHei"';
+        ctx.fillText('选择模式', canvas.width/2, 220);
+        ctx.fillStyle = '#5a5a6e';
+        ctx.fillRect(canvas.width/2 - 120, 260, 240, 50);
+        ctx.fillStyle = '#fff';
+        ctx.fillText('双人热座', canvas.width/2, 290);
+        ctx.fillStyle = '#5a5a6e';
+        ctx.fillRect(canvas.width/2 - 120, 330, 240, 50);
+        ctx.fillText('人机对战', canvas.width/2, 360);
+    }
+
+    function drawGameOver() {
+        ctx.fillStyle = '#2a2a30';
+        ctx.fillRect(0, 0, canvas.width, canvas.height);
+        ctx.fillStyle = '#fff';
+        ctx.font = 'bold 30px "Microsoft YaHei"';
+        ctx.textAlign = 'center';
+        if (game.winner === 0) {
+            ctx.fillText('平局！', canvas.width/2, 200);
+        } else {
+            ctx.fillText(`玩家 ${game.winner} 获胜！`, canvas.width/2, 200);
+        }
+        ctx.font = '18px "Microsoft YaHei"';
+        ctx.fillText('点击任意处返回菜单', canvas.width/2, 260);
+    }
+
+    function drawModeButtons() {
+        const playerNum = game.currentPlayer;
+        const card = game.selected[playerNum];
+        if (!card) return;
+        let modes = [];
+        if (card === '女巫') modes = ['毒药', '解药'];
+        if (card === '顺手牵羊') modes = ['牵血', '牵牌'];
+        if (modes.length === 0) return;
+
+        ctx.fillStyle = '#1e1e24';
+        ctx.fillRect(canvas.width/2 - 150, 280, 300, 80);
+        ctx.fillStyle = '#fff';
+        ctx.font = '16px "Microsoft YaHei"';
+        ctx.textAlign = 'center';
+        ctx.fillText(`选择模式（玩家 ${playerNum}）`, canvas.width/2, 300);
+        modes.forEach((mode, i) => {
+            ctx.fillStyle = '#5a5a6e';
+            ctx.fillRect(canvas.width/2 - 100 + i*120, 320, 100, 30);
+            ctx.fillStyle = '#fff';
+            ctx.fillText(mode, canvas.width/2 - 50 + i*120, 340);
+        });
+    }
+
+    // 事件监听
+    canvas.addEventListener('click', (e) => {
+        const rect = canvas.getBoundingClientRect();
+        const scaleX = canvas.width / rect.width;
+        const scaleY = canvas.height / rect.height;
+        const x = (e.clientX - rect.left) * scaleX;
+        const y = (e.clientY - rect.top) * scaleY;
+
+        if (game.state === 'menu') {
+            // 检测点击菜单按钮
+            if (y > 260 && y < 310 && x > canvas.width/2 - 120 && x < canvas.width/2 + 120) {
+                resetGame('pvp');
+            } else if (y > 330 && y < 380 && x > canvas.width/2 - 120 && x < canvas.width/2 + 120) {
+                resetGame('ai');
+            }
+            return;
+        }
+
+        if (game.state === 'gameover') {
+            game.state = 'menu';
+            render();
+            return;
+        }
+
+        if (game.state === 'modeSelect') {
+            const playerNum = game.currentPlayer;
+            const card = game.selected[playerNum];
+            if (!card) return;
+            let modes = [];
+            if (card === '女巫') modes = ['毒药', '解药'];
+            if (card === '顺手牵羊') modes = ['牵血', '牵牌'];
+            if (modes.length > 0) {
+                modes.forEach((mode, i) => {
+                    const btnX = canvas.width/2 - 100 + i*120;
+                    const btnY = 320;
+                    if (y > btnY && y < btnY+30 && x > btnX && x < btnX+100) {
+                        handleModeSelect(playerNum, mode);
+                        return;
+                    }
+                });
+            }
+            return;
+        }
+
+        // 选牌阶段
+        if (game.state === 'select') {
+            const playerNum = game.currentPlayer;
+            // 检测猎枪按钮
+            const card = game.selected[playerNum];
+            if (card) {
+                const isDamage = (card === '狼人' || (card === '女巫' && game.selectedMode[playerNum] === '毒药'));
+                if (isDamage && game.players[playerNum].hasGun && !game.players[playerNum].gunUsed) {
+                    if (y > 280 && y < 310 && x > canvas.width/2 - 80 && x < canvas.width/2 + 80) {
+                        toggleGun(playerNum);
+                        return;
+                    }
+                }
+            }
+
+            // 检测手牌
+            const hand = game.players[playerNum].hand;
+            const cardWidth = 60;
+            const cardHeight = 80;
+            const gap = 10;
+            const startX = (playerNum === 1) ? 60 : 60; // 根据drawPlayerArea计算
+            const startY = (playerNum === 1) ? 120 : 360; // 调整
+            // 实际上我们需要根据玩家区域计算
+            let areaY = (playerNum === 1) ? 80 : 320;
+            let areaStartX = 40;
+            let areaStartY = areaY + 40;
+            for (let i = 0; i < hand.length; i++) {
+                const cx = areaStartX + i * (cardWidth + gap);
+                const cy = areaStartY;
+                if (x > cx && x < cx + cardWidth && y > cy && y < cy + cardHeight) {
+                    handleCardClick(playerNum, hand[i]);
+                    return;
+                }
+            }
+        }
+    });
+
+    // 按钮事件
+    document.getElementById('btn-menu').addEventListener('click', () => {
+        game.state = 'menu';
+        render();
+    });
+    document.getElementById('btn-restart').addEventListener('click', () => {
+        resetGame(game.mode === 'menu' ? 'ai' : game.mode);
+    });
+    document.getElementById('btn-undo').addEventListener('click', () => {
+        // 简单撤销：清空当前选牌
+        if (game.state === 'select') {
+            game.selected[game.currentPlayer] = null;
+            game.selectedMode[game.currentPlayer] = null;
+            game.selectedGun[game.currentPlayer] = false;
+            render();
+        }
+    });
+
+    // 初始化
+    game.state = 'menu';
+    render();
+</script>
+</body>
+</html>
